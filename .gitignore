@@ -1,0 +1,8 @@
+# 编译输出
+build/
+
+# IDE 配置
+.vscode/
+
+# 测试资源
+demo.jpg
