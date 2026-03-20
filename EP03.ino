@@ -16,7 +16,7 @@
 #include <U8g2_for_Adafruit_GFX.h>
 #include "bitmaps/Bitmaps3c176x264.h"
 
-const char* NTP_SERVER = "pool.ntp.org";
+const char* NTP_SERVER = "ntp5.aliyun.com";
 const long GMT_OFFSET = 8 * 3600;
 const int DAYLIGHT_OFFSET = 0;
 
@@ -44,8 +44,10 @@ char soupText[512] = "正在获取语录...";
 unsigned long lastRefreshTime = 0;
 bool hasUpdate = false;
 
-char yearMonthStr[12] = "";
+char headerStr[48] = "";
 int currentDay = 0;
+char indexStr[32] = "SH:---";
+bool isIndexUp = false;
 
 void setup() {
   Serial.begin(115200);
@@ -55,6 +57,7 @@ void setup() {
   setupWiFi();
   initDisplay();
   fetchSoupText();
+  fetchIndex();
 
   lastRefreshTime = millis();
   hasUpdate = true;
@@ -67,6 +70,7 @@ void loop() {
   if (currentTime - lastRefreshTime >= REFRESH_INTERVAL) {
     Serial.println("定时刷新...");
     fetchSoupText();
+    fetchIndex();
     updateDateTime();
     hasUpdate = true;
     lastRefreshTime = currentTime;
@@ -101,6 +105,7 @@ void setupWiFi() {
     Serial.println(WiFi.localIP());
     configTime(GMT_OFFSET, DAYLIGHT_OFFSET, NTP_SERVER);
     delay(1000);
+    fetchCity();
     updateDateTime();
   } else {
     Serial.println();
@@ -120,15 +125,32 @@ void updateDateTime() {
   struct tm timeinfo;
   for (int i = 0; i < 5; i++) {
     if (getLocalTime(&timeinfo)) {
-      int year2 = (timeinfo.tm_year + 1900) % 100;
-      sprintf(yearMonthStr, "%02d/%02d", year2, timeinfo.tm_mon + 1);
+      sprintf(headerStr, "%d/%02d", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1);
       currentDay = timeinfo.tm_mday;
-      Serial.println("时间: " + String(yearMonthStr) + " " + String(currentDay));
+      Serial.println("时间: " + String(headerStr));
       return;
     }
     delay(500);
   }
   Serial.println("时间同步失败");
+}
+
+void fetchCity() {
+  HTTPClient http;
+  http.begin("https://ipapi.co/json/");
+  if (http.GET() == 200) {
+    String payload = http.getString();
+    int p = payload.indexOf("\"city\":\"");
+    if (p != -1) {
+      p += 8;
+      int e = payload.indexOf("\"", p);
+      if (e > p) {
+        String city = payload.substring(p, e);
+        sprintf(headerStr + strlen(headerStr), "/%s", city.c_str());
+      }
+    }
+  }
+  http.end();
 }
 
 void fetchSoupText() {
@@ -167,14 +189,50 @@ void fetchSoupText() {
 
   if (httpCode == HTTP_CODE_OK || httpCode == 200) {
     Serial.println("API: " + payload);
-    payload.toCharArray(soupText, sizeof(soupText));
-    Serial.println("语录: " + String(soupText));
+
+    String text = "";
+    int start = payload.indexOf("\"msg\":\"");
+    if (start != -1) {
+      start += 7;
+      int end = payload.indexOf("\"}", start);
+      if (end == -1) end = payload.indexOf("\"", start);
+      text = payload.substring(start, end);
+    } else {
+      text = payload;
+    }
+
+    if (text.length() > 0) {
+      text.toCharArray(soupText, sizeof(soupText));
+      Serial.println("语录: " + String(soupText));
+    }
   } else {
     Serial.print("HTTP 错误: ");
     Serial.println(httpCode);
-    strcpy(soupText, "网络请求失败");
   }
 
+  http.end();
+}
+
+void fetchIndex() {
+  HTTPClient http;
+  http.begin("https://qt.gtimg.cn/q=sh000001");
+  if (http.GET() == 200) {
+    String payload = http.getString();
+    Serial.println("SH原始:" + payload);
+    
+    int t1 = payload.indexOf("~");
+    int t2 = payload.indexOf("~", t1 + 1);
+    int t3 = payload.indexOf("~", t2 + 1);
+    
+    if (t1 != -1 && t2 != -1 && t3 != -1) {
+      String price = payload.substring(t2 + 1, t3);
+      int t4 = payload.indexOf("~", t3 + 1);
+      String change = payload.substring(t3 + 1, t4);
+      isIndexUp = change.toFloat() >= 0;
+      sprintf(indexStr, "SH:%s", price.c_str());
+      Serial.println("解析:" + String(indexStr));
+    }
+  }
   http.end();
 }
 
@@ -189,7 +247,7 @@ void drawScreen() {
     u8g2fonts.setForegroundColor(GxEPD_BLACK);
     u8g2fonts.setBackgroundColor(GxEPD_WHITE);
     u8g2fonts.setCursor(18, 18);
-    u8g2fonts.print(yearMonthStr);
+    u8g2fonts.print(headerStr);
 
     u8g2fonts.setFont(u8g2_font_logisoso58_tn);
     u8g2fonts.setForegroundColor(GxEPD_RED);
@@ -203,7 +261,12 @@ void drawScreen() {
 
     display.drawLine(30, 150, 146, 150, GxEPD_BLACK);
 
-    drawWrappedText(soupText, 175, 155, GxEPD_BLACK);
+    drawWrappedText(soupText, 170, 155, GxEPD_BLACK);
+
+    u8g2fonts.setFont(u8g2_font_helvR10_tn);
+    u8g2fonts.setForegroundColor(isIndexUp ? GxEPD_RED : GxEPD_BLACK);
+    u8g2fonts.setCursor(18, 245);
+    u8g2fonts.print(indexStr);
 
   } while (display.nextPage());
 }
