@@ -50,6 +50,8 @@ int currentDay = 0;
 // 上证指数相关
 char indexStr[32] = "SH:----";
 char cybStr[32] = "CY:----";  // 创业板指数
+bool shUp = false;  // 上证涨跌
+bool cyUp = false;  // 创业板涨跌
 
 // 星期名称
 const char* WEEKDAYS[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
@@ -220,15 +222,24 @@ void fetchIndex() {
     Serial.println("SH原始:" + payload);
     
     // 解析格式: v_sh000001="1~上证指数~000001~3862.62~..."
-    int t1 = payload.indexOf("~");
-    int t2 = payload.indexOf("~", t1 + 1);
-    int t3 = payload.indexOf("~", t2 + 1);
-    int t4 = payload.indexOf("~", t3 + 1);
+    // 按~分割，获取字段3（当前价格）和字段32（涨跌%）
+    int start = 0;
+    int fieldIndex = 0;
+    String fields[40];
     
-    if (t3 != -1 && t4 != -1) {
-      String price = payload.substring(t3 + 1, t4);
+    for (int i = 0; i < payload.length() && fieldIndex < 40; i++) {
+      if (payload[i] == '~') {
+        fields[fieldIndex++] = payload.substring(start, i);
+        start = i + 1;
+      }
+    }
+    
+    if (fieldIndex > 32) {
+      String price = fields[3];  // 当前价格
+      String change = fields[32];  // 涨跌%
       sprintf(indexStr, "SH:%s", price.c_str());
-      Serial.println("上证:" + String(indexStr));
+      shUp = change.toFloat() >= 0;
+      Serial.println("上证:" + String(indexStr) + " 涨跌:" + change + "%");
     }
   } else {
     Serial.print("上证HTTP错误: ");
@@ -246,15 +257,23 @@ void fetchIndex() {
     Serial.println("CY原始:" + payload);
     
     // 解析格式: v_sz399006="1~创业板指~399006~2156.32~..."
-    int t1 = payload.indexOf("~");
-    int t2 = payload.indexOf("~", t1 + 1);
-    int t3 = payload.indexOf("~", t2 + 1);
-    int t4 = payload.indexOf("~", t3 + 1);
+    int start = 0;
+    int fieldIndex = 0;
+    String fields[40];
     
-    if (t3 != -1 && t4 != -1) {
-      String price = payload.substring(t3 + 1, t4);
+    for (int i = 0; i < payload.length() && fieldIndex < 40; i++) {
+      if (payload[i] == '~') {
+        fields[fieldIndex++] = payload.substring(start, i);
+        start = i + 1;
+      }
+    }
+    
+    if (fieldIndex > 32) {
+      String price = fields[3];  // 当前价格
+      String change = fields[32];  // 涨跌%
       sprintf(cybStr, "CY:%s", price.c_str());
-      Serial.println("创业板:" + String(cybStr));
+      cyUp = change.toFloat() >= 0;
+      Serial.println("创业板:" + String(cybStr) + " 涨跌:" + change + "%");
     }
   } else {
     Serial.print("创业板HTTP错误: ");
@@ -312,11 +331,15 @@ void drawScreen() {
     u8g2fonts.setForegroundColor(GxEPD_BLACK);
     drawQuoteText(quoteText, 190, 20);
 
-    // 7. 上证指数和创业板指数（底部显示）
+    // 7. 上证指数和创业板指数（底部显示，涨红跌黑）
     u8g2fonts.setFont(u8g2_font_helvR08_tr);
-    u8g2fonts.setForegroundColor(GxEPD_BLACK);
+    u8g2fonts.setBackgroundColor(GxEPD_WHITE);
+    
+    u8g2fonts.setForegroundColor(shUp ? GxEPD_RED : GxEPD_BLACK);
     u8g2fonts.setCursor(10, 255);
     u8g2fonts.print(indexStr);
+    
+    u8g2fonts.setForegroundColor(cyUp ? GxEPD_RED : GxEPD_BLACK);
     u8g2fonts.setCursor(90, 255);
     u8g2fonts.print(cybStr);
 
