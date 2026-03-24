@@ -14,7 +14,6 @@
 #include <time.h>
 #include <GxEPD2_3C.h>
 #include <U8g2_for_Adafruit_GFX.h>
-#include "bitmaps/Bitmaps3c176x264.h"
 
 const char* NTP_SERVER = "ntp5.aliyun.com";
 const long GMT_OFFSET = 8 * 3600;
@@ -22,8 +21,6 @@ const int DAYLIGHT_OFFSET = 0;
 
 const char* WIFI_SSID = "Guest";
 const char* WIFI_PASSWORD = "shunwang1122";
-
-#define REFRESH_INTERVAL 60000
 
 #define EPD2_COLOR GxEPD2_3C
 #define EPD2_MODE GxEPD2_270c
@@ -40,48 +37,71 @@ EPD2_COLOR<EPD2_MODE, EPD2_MODE::HEIGHT> display(EPD2_MODE(15, 4, 2, 5));
 
 U8G2_FOR_ADAFRUIT_GFX u8g2fonts;
 
-char soupText[512] = "正在获取语录...";
-unsigned long lastRefreshTime = 0;
-bool hasUpdate = false;
+// 时间相关
+char headerStr[32] = "Jan 2025";      // 顶部年月
+char dayStr[8] = "11";                // 日期数字
+char weekdayStr[16] = "Monday";       // 星期几
+char progressStr[32] = "";            // 年度进度
 
-char headerStr[48] = "";
+// 语录相关
+char quoteText[256] = "生活不止眼前的苟且，还有诗和远方。";
 int currentDay = 0;
-char indexStr[32] = "SH:---";
-bool isIndexUp = false;
+
+// 上证指数相关
+char indexStr[32] = "SH:----";
+char cybStr[32] = "CY:----";  // 创业板指数
+
+// 星期名称
+const char* WEEKDAYS[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+const char* MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
 void setup() {
   Serial.begin(115200);
+  delay(1000);  // 等待串口稳定
   Serial.println();
   Serial.println("=== 心灵鸡汤 ESP32 墨水屏 ===");
 
-  setupWiFi();
   initDisplay();
-  fetchSoupText();
+  yield();  // 喂狗
+  
+  setupWiFi();
+  yield();
+  
+  updateDateTime();
+  yield();
+  
+  fetchQuote();
+  yield();
+  
   fetchIndex();
+  yield();
+  
+  drawScreen();
+  yield();
 
-  lastRefreshTime = millis();
-  hasUpdate = true;
-  Serial.println("初始化完成");
+  Serial.println("显示完成");
 }
 
 void loop() {
-  unsigned long currentTime = millis();
+  delay(60000);  // 60秒后重新获取
+  yield();
+  updateDateTime();
+  yield();
+  fetchQuote();
+  yield();
+  fetchIndex();
+  yield();
+  drawScreen();
+  yield();
+}
 
-  if (currentTime - lastRefreshTime >= REFRESH_INTERVAL) {
-    Serial.println("定时刷新...");
-    fetchSoupText();
-    fetchIndex();
-    updateDateTime();
-    hasUpdate = true;
-    lastRefreshTime = currentTime;
-  }
-
-  if (hasUpdate) {
-    drawScreen();
-    hasUpdate = false;
-  }
-
+void initDisplay() {
+  display.init(0, false, 2, true);  // 使用更稳定的初始化参数
+  display.setRotation(2);
+  display.setFullWindow();
+  u8g2fonts.begin(display);
   delay(100);
+  yield();
 }
 
 void setupWiFi() {
@@ -92,9 +112,10 @@ void setupWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
     delay(500);
     Serial.print(".");
+    yield();  // 喂狗
     attempts++;
   }
 
@@ -104,30 +125,35 @@ void setupWiFi() {
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
     configTime(GMT_OFFSET, DAYLIGHT_OFFSET, NTP_SERVER);
-    delay(1000);
-    fetchCity();
-    updateDateTime();
+    delay(500);
   } else {
     Serial.println();
     Serial.println("WiFi 连接失败!");
-    strcpy(soupText, "WiFi 连接失败，请检查配置");
+    strcpy(quoteText, "WiFi 连接失败");
   }
-}
-
-void initDisplay() {
-  display.init();
-  display.setRotation(2);
-  display.setFullWindow();
-  u8g2fonts.begin(display);
+  yield();
 }
 
 void updateDateTime() {
   struct tm timeinfo;
   for (int i = 0; i < 5; i++) {
     if (getLocalTime(&timeinfo)) {
-      sprintf(headerStr, "%d/%02d", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1);
+      // 格式化年月 "Mar 2026"
+      sprintf(headerStr, "%s %d", MONTHS[timeinfo.tm_mon], timeinfo.tm_year + 1900);
+      
+      // 日期数字
+      sprintf(dayStr, "%d", timeinfo.tm_mday);
       currentDay = timeinfo.tm_mday;
-      Serial.println("时间: " + String(headerStr));
+      
+      // 星期几
+      strcpy(weekdayStr, WEEKDAYS[timeinfo.tm_wday]);
+      
+      // 年度进度
+      int dayOfYear = timeinfo.tm_yday;
+      float progress = (float)dayOfYear / 365.0 * 100.0;
+      sprintf(progressStr, "%d is %.1f%% complete", timeinfo.tm_year + 1900, progress);
+      
+      Serial.println("时间: " + String(headerStr) + " " + String(dayStr) + " " + String(weekdayStr));
       return;
     }
     delay(500);
@@ -135,105 +161,109 @@ void updateDateTime() {
   Serial.println("时间同步失败");
 }
 
-void fetchCity() {
-  HTTPClient http;
-  http.begin("https://ipapi.co/json/");
-  if (http.GET() == 200) {
-    String payload = http.getString();
-    int p = payload.indexOf("\"city\":\"");
-    if (p != -1) {
-      p += 8;
-      int e = payload.indexOf("\"", p);
-      if (e > p) {
-        String city = payload.substring(p, e);
-        sprintf(headerStr + strlen(headerStr), "/%s", city.c_str());
-      }
-    }
-  }
-  http.end();
-}
-
-void fetchSoupText() {
+void fetchQuote() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi 未连接");
     return;
   }
 
   HTTPClient http;
-  const char* urls[] = {
-    "https://v1.jinrishici.com/rensheng.txt",
-    "https://zj.v.api.aa1.cn/api/wenan-zl/?type=json",
-    "https://api.ooopn.com/ciba/index.php?type=text",
-    "https://api.xygeng.cn/Gr saying",
-    "https://international.v1.hssk.cn/random",
-    "https://api.suxun.io/api/rensheng",
-    "https://api.77tianapi.com/renshengtxt/index.php"
-  };
-
-  int urlCount = sizeof(urls) / sizeof(urls[0]);
-  int startIdx = random(0, urlCount);
-
-  int httpCode = 0;
-  String payload = "";
-
-  for (int i = 0; i < urlCount; i++) {
-    int idx = (startIdx + i) % urlCount;
-    http.begin(urls[idx]);
-    httpCode = http.GET();
-    if (httpCode == HTTP_CODE_OK || httpCode == 200) {
-      payload = http.getString();
-      break;
-    }
-    http.end();
-  }
-
-  if (httpCode == HTTP_CODE_OK || httpCode == 200) {
+  http.setTimeout(5000);  // 5秒超时
+  
+  // 只使用一个可靠的API，减少内存占用
+  const char* url = "https://v1.jinrishici.com/rensheng.txt";
+  
+  http.begin(url);
+  int httpCode = http.GET();
+  
+  if (httpCode == 200) {
+    String payload = http.getString();
     Serial.println("API: " + payload);
-
-    String text = "";
-    int start = payload.indexOf("\"msg\":\"");
-    if (start != -1) {
-      start += 7;
-      int end = payload.indexOf("\"}", start);
-      if (end == -1) end = payload.indexOf("\"", start);
-      text = payload.substring(start, end);
-    } else {
-      text = payload;
-    }
-
-    if (text.length() > 0) {
-      text.toCharArray(soupText, sizeof(soupText));
-      Serial.println("语录: " + String(soupText));
+    
+    // 直接使用返回的文本
+    if (payload.length() > 0) {
+      // 限制长度
+      if (payload.length() > 50) {
+        payload = payload.substring(0, 50);
+        int lastPeriod = payload.lastIndexOf('。');
+        if (lastPeriod > 20) {
+          payload = payload.substring(0, lastPeriod + 1);
+        }
+      }
+      payload.toCharArray(quoteText, sizeof(quoteText));
+      Serial.println("语录: " + String(quoteText));
     }
   } else {
     Serial.print("HTTP 错误: ");
     Serial.println(httpCode);
+    strcpy(quoteText, "今天也要开心鸭！");
   }
-
+  
   http.end();
+  yield();
 }
 
 void fetchIndex() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi 未连接，跳过指数获取");
+    return;
+  }
+
   HTTPClient http;
+  http.setTimeout(5000);
+  
+  // 获取上证指数
   http.begin("https://qt.gtimg.cn/q=sh000001");
-  if (http.GET() == 200) {
+  int httpCode = http.GET();
+  if (httpCode == 200) {
     String payload = http.getString();
     Serial.println("SH原始:" + payload);
     
+    // 解析格式: v_sh000001="1~上证指数~000001~3862.62~..."
     int t1 = payload.indexOf("~");
     int t2 = payload.indexOf("~", t1 + 1);
     int t3 = payload.indexOf("~", t2 + 1);
+    int t4 = payload.indexOf("~", t3 + 1);
     
-    if (t1 != -1 && t2 != -1 && t3 != -1) {
-      String price = payload.substring(t2 + 1, t3);
-      int t4 = payload.indexOf("~", t3 + 1);
-      String change = payload.substring(t3 + 1, t4);
-      isIndexUp = change.toFloat() >= 0;
+    if (t3 != -1 && t4 != -1) {
+      String price = payload.substring(t3 + 1, t4);
       sprintf(indexStr, "SH:%s", price.c_str());
-      Serial.println("解析:" + String(indexStr));
+      Serial.println("上证:" + String(indexStr));
     }
+  } else {
+    Serial.print("上证HTTP错误: ");
+    Serial.println(httpCode);
+    strcpy(indexStr, "SH:----");
   }
   http.end();
+  yield();
+  
+  // 获取创业板指数
+  http.begin("https://qt.gtimg.cn/q=sz399006");
+  httpCode = http.GET();
+  if (httpCode == 200) {
+    String payload = http.getString();
+    Serial.println("CY原始:" + payload);
+    
+    // 解析格式: v_sz399006="1~创业板指~399006~2156.32~..."
+    int t1 = payload.indexOf("~");
+    int t2 = payload.indexOf("~", t1 + 1);
+    int t3 = payload.indexOf("~", t2 + 1);
+    int t4 = payload.indexOf("~", t3 + 1);
+    
+    if (t3 != -1 && t4 != -1) {
+      String price = payload.substring(t3 + 1, t4);
+      sprintf(cybStr, "CY:%s", price.c_str());
+      Serial.println("创业板:" + String(cybStr));
+    }
+  } else {
+    Serial.print("创业板HTTP错误: ");
+    Serial.println(httpCode);
+    strcpy(cybStr, "CY:----");
+  }
+  
+  http.end();
+  yield();
 }
 
 void drawScreen() {
@@ -241,70 +271,97 @@ void drawScreen() {
 
   do {
     display.fillScreen(GxEPD_WHITE);
-    display.drawRect(5, 5, 166, 254, GxEPD_BLACK);
 
-    u8g2fonts.setFont(u8g2_font_helvR10_tn);
+    // 1. 顶部年月（居中显示）
+    u8g2fonts.setFont(u8g2_font_helvR10_tr);
     u8g2fonts.setForegroundColor(GxEPD_BLACK);
     u8g2fonts.setBackgroundColor(GxEPD_WHITE);
-    u8g2fonts.setCursor(18, 18);
+    int16_t headerWidth = u8g2fonts.getUTF8Width(headerStr);
+    int16_t headerX = (176 - headerWidth) / 2;
+    u8g2fonts.setCursor(headerX, 25);
     u8g2fonts.print(headerStr);
 
+    // 2. 日期数字（红色大字，居中显示）
     u8g2fonts.setFont(u8g2_font_logisoso58_tn);
     u8g2fonts.setForegroundColor(GxEPD_RED);
-    u8g2fonts.setBackgroundColor(GxEPD_WHITE);
-    char dayStr[4];
-    sprintf(dayStr, "%d", currentDay);
     int16_t dayWidth = u8g2fonts.getUTF8Width(dayStr);
     int16_t dayX = (176 - dayWidth) / 2;
-    u8g2fonts.setCursor(dayX, 115);
+    u8g2fonts.setCursor(dayX, 95);
     u8g2fonts.print(dayStr);
 
-    display.drawLine(30, 150, 146, 150, GxEPD_BLACK);
+    // 3. 星期几（居中显示）
+    u8g2fonts.setFont(u8g2_font_helvR10_tr);
+    u8g2fonts.setForegroundColor(GxEPD_BLACK);
+    int16_t weekdayWidth = u8g2fonts.getUTF8Width(weekdayStr);
+    int16_t weekdayX = (176 - weekdayWidth) / 2;
+    u8g2fonts.setCursor(weekdayX, 130);
+    u8g2fonts.print(weekdayStr);
 
-    drawWrappedText(soupText, 170, 155, GxEPD_BLACK);
+    // 4. 年度进度（居中显示，小字体）
+    u8g2fonts.setFont(u8g2_font_helvR08_tr);
+    int16_t progressWidth = u8g2fonts.getUTF8Width(progressStr);
+    int16_t progressX = (176 - progressWidth) / 2;
+    u8g2fonts.setCursor(progressX, 150);
+    u8g2fonts.print(progressStr);
 
-    u8g2fonts.setFont(u8g2_font_helvR10_tn);
-    u8g2fonts.setForegroundColor(isIndexUp ? GxEPD_RED : GxEPD_BLACK);
-    u8g2fonts.setCursor(18, 245);
+    // 5. 分隔线
+    display.drawLine(30, 165, 146, 165, GxEPD_BLACK);
+
+    // 6. 语录区域（左对齐，最多3行）
+    u8g2fonts.setFont(u8g2_font_wqy12_t_gb2312b);
+    u8g2fonts.setForegroundColor(GxEPD_BLACK);
+    drawQuoteText(quoteText, 190, 20);
+
+    // 7. 上证指数和创业板指数（底部显示）
+    u8g2fonts.setFont(u8g2_font_helvR08_tr);
+    u8g2fonts.setForegroundColor(GxEPD_BLACK);
+    u8g2fonts.setCursor(10, 255);
     u8g2fonts.print(indexStr);
+    u8g2fonts.setCursor(90, 255);
+    u8g2fonts.print(cybStr);
 
   } while (display.nextPage());
 }
 
-void drawWrappedText(const char* text, int startY, int maxWidth, uint16_t color) {
+void drawQuoteText(const char* text, int startY, int lineHeight) {
   u8g2fonts.setFont(u8g2_font_wqy12_t_gb2312b);
-  u8g2fonts.setForegroundColor(color);
+  u8g2fonts.setForegroundColor(GxEPD_BLACK);
   u8g2fonts.setBackgroundColor(GxEPD_WHITE);
 
-  int x = 18;
+  int maxWidth = 130;  // 最大宽度（增加边距）
+  int x = 23;          // 起始X坐标（增加边距）
   int y = startY;
-  int lineHeight = 17;
-  int chineseWidth = 14;
-  int asciiWidth = 7;
+  int lineCount = 0;
+  int maxLines = 3;    // 最多3行
 
   const char* ptr = text;
   int currentX = x;
+  char lineBuf[64] = {0};
+  int lineIdx = 0;
 
-  while (*ptr) {
+  while (*ptr && lineCount < maxLines) {
     int charLen = 1;
-    int charW = asciiWidth;
+    int charW = 7;
 
+    // 判断UTF-8字符长度
     if ((*ptr & 0x80) == 0) {
-      charW = asciiWidth;
+      charLen = 1;
+      charW = 7;
     } else if ((*ptr & 0xE0) == 0xC0) {
       charLen = 2;
-      charW = chineseWidth;
+      charW = 14;
     } else if ((*ptr & 0xF0) == 0xE0) {
       charLen = 3;
-      charW = chineseWidth;
+      charW = 14;
     } else if ((*ptr & 0xF8) == 0xF0) {
       charLen = 4;
-      charW = chineseWidth * 1.3;
+      charW = 14;
     } else {
       ptr++;
       continue;
     }
 
+    // 复制字符到缓冲区
     char buf[5] = {0};
     for (int i = 0; i < charLen && ptr[i]; i++) {
       buf[i] = ptr[i];
@@ -312,21 +369,35 @@ void drawWrappedText(const char* text, int startY, int maxWidth, uint16_t color)
 
     int glyphW = u8g2fonts.getUTF8Width(buf);
 
-    if (glyphW == 0 || glyphW >= chineseWidth * 1.5) {
-      ptr += charLen;
-      continue;
-    }
-
-    if (currentX + glyphW * 1.2 > maxWidth) {
+    // 换行检查
+    if (currentX + glyphW > x + maxWidth) {
+      // 绘制当前行（左对齐）
+      lineBuf[lineIdx] = 0;
+      u8g2fonts.setCursor(x, y);
+      u8g2fonts.print(lineBuf);
+      
+      // 新行
+      lineCount++;
       y += lineHeight;
       currentX = x;
-      if (y > 250) break;
+      lineIdx = 0;
+      lineBuf[0] = 0;
+      
+      if (lineCount >= maxLines) break;
     }
 
-    u8g2fonts.setCursor(currentX, y);
-    u8g2fonts.print(buf);
-
-    currentX += glyphW * 1.2;
+    // 添加字符到当前行
+    for (int i = 0; i < charLen; i++) {
+      lineBuf[lineIdx++] = ptr[i];
+    }
+    currentX += glyphW;
     ptr += charLen;
+  }
+
+  // 绘制最后一行（左对齐）
+  if (lineIdx > 0 && lineCount < maxLines) {
+    lineBuf[lineIdx] = 0;
+    u8g2fonts.setCursor(x, y);
+    u8g2fonts.print(lineBuf);
   }
 }
